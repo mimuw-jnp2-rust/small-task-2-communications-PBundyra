@@ -21,7 +21,11 @@ enum MessageType {
 
 impl MessageType {
     fn header(&self) -> &'static str {
-        todo!()
+        match self {
+            MessageType::Handshake => "[HANDSHAKE]",
+            MessageType::Post => "[POST]",
+            MessageType::GetCount => "[GET COUNT]",
+        }
     }
 }
 
@@ -69,7 +73,23 @@ impl Client {
     // Method should return an error when a connection already exists.
     // The client should send a handshake to the server.
     fn open(&mut self, addr: &str, server: Server) -> CommsResult<()> {
-        todo!()
+        match self.connections.get(addr) {
+            None => {
+                self.connections
+                    .insert(addr.to_string(), Connection::Open(server));
+                match self.send(
+                    addr,
+                    Message {
+                        msg_type: MessageType::Handshake,
+                        load: self.ip.clone(),
+                    },
+                ) {
+                    Ok(_) => Ok(()),
+                    Err(e) => Err(e),
+                }
+            }
+            Some(_) => Err(CommsError::ConnectionExists(addr.to_string())),
+        }
     }
 
     // Sends the provided message to the server at the given `addr`.
@@ -77,21 +97,38 @@ impl Client {
     // responds with a ServerLimitReached error, its corresponding connection
     // should be closed.
     fn send(&mut self, addr: &str, msg: Message) -> CommsResult<Response> {
-        // server.receive(msg)
-        todo!()
+        match self.connections.get_mut(addr) {
+            None => Err(CommsError::ConnectionNotFound(addr.to_string())),
+            Some(conn) => match conn {
+                Connection::Closed => Err(CommsError::ConnectionClosed(addr.to_string())),
+                Connection::Open(server) => {
+                    let result = server.receive(msg);
+                    if let Err(CommsError::ServerLimitReached(_)) = result {
+                        *self.connections.get_mut(addr).unwrap() = Connection::Closed;
+                    }
+                    result
+                }
+            },
+        }
     }
 
     // Returns whether the connection to `addr` exists and has
     // the `Open` status.
     #[allow(dead_code)]
     fn is_open(&self, addr: &str) -> bool {
-        todo!()
+        match self.connections.get(addr).unwrap() {
+            Connection::Closed => false,
+            Connection::Open(_) => true,
+        }
     }
 
     // Returns the number of closed connections
     #[allow(dead_code)]
     fn count_closed(&self) -> usize {
-        todo!()
+        self.connections
+            .values()
+            .filter(|conn| matches!(conn, Connection::Closed))
+            .count()
     }
 }
 
@@ -101,7 +138,6 @@ enum Response {
     PostReceived,
     GetCount(u32),
 }
-
 
 #[derive(Clone)]
 struct Server {
@@ -113,7 +149,12 @@ struct Server {
 
 impl Server {
     fn new(name: String, limit: u32) -> Server {
-        todo!()
+        Server {
+            name,
+            post_count: 0,
+            limit,
+            connected_client: None,
+        }
     }
 
     // Consumes the message.
@@ -123,8 +164,24 @@ impl Server {
     // with the GetCount response containing the number of received POST requests.
     fn receive(&mut self, msg: Message) -> CommsResult<Response> {
         eprintln!("{} received:\n{}", self.name, msg.content());
-
-        todo!()
+        match msg.msg_type {
+            MessageType::Handshake => match self.connected_client {
+                None => {
+                    self.connected_client = Some(msg.load);
+                    Ok(Response::HandshakeReceived)
+                }
+                Some(_) => Err(CommsError::UnexpectedHandshake(self.name.clone())),
+            },
+            MessageType::Post => {
+                if self.post_count == self.limit {
+                    Err(CommsError::ServerLimitReached(self.name.clone()))
+                } else {
+                    self.post_count += 1;
+                    Ok(Response::PostReceived)
+                }
+            }
+            MessageType::GetCount => Ok(Response::GetCount(self.post_count)),
+        }
     }
 }
 
@@ -218,6 +275,7 @@ mod tests {
             .is_ok());
         assert!(client.is_open("197.0.0.1"));
 
+        println!("essa1");
         let conn = client.connections.get("197.0.0.1").unwrap();
         match conn {
             &Connection::Open(ref server) => {
@@ -225,6 +283,7 @@ mod tests {
             }
             _ => panic!(),
         }
+        println!("essa2");
 
         // opening an already open connection should give an error
         let result = client.open("197.0.0.1", Server::new(String::from("TestServer2"), 100));
